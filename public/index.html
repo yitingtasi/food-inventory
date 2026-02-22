@@ -10,7 +10,7 @@
 :root{
   --bg:#0F0F1A;--surface:#1A1A2E;--surface2:#12121F;--border:#2A2A40;
   --text:#E8E8F0;--muted:#8888AA;--accent:#6366F1;--accent2:#8B5CF6;
-  --green:#4ADE80;--yellow:#F59E0B;--red:#EF4444;--orange:#FB923C;
+  --green:#4ADE80;--yellow:#F59E0B;--red:#EF4444;
 }
 body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
@@ -26,31 +26,30 @@ button:hover{transform:translateY(-1px)}
 .btn-ghost{background:var(--border);color:var(--text)}
 @keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes spin{to{transform:rotate(360deg)}}
 .slide-in{animation:slideIn .25s ease}
 .pulse{animation:pulse 2s infinite}
-/* Modal */
+.spin{animation:spin 1s linear infinite;display:inline-block}
 .modal-bg{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto}
-/* Toast */
 #toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:12px;font-size:14px;font-weight:500;z-index:2000;display:none;animation:slideIn .25s ease}
-/* Header */
+#sync-indicator{position:fixed;top:16px;right:16px;font-size:12px;padding:4px 10px;border-radius:20px;z-index:999;transition:all .3s}
 header{background:linear-gradient(135deg,var(--surface) 0%,#16213E 100%);border-bottom:1px solid var(--border);padding:0 24px}
 .header-inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:64px;gap:12px}
-/* Grid */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
 .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
 @media(max-width:700px){.stats-grid{grid-template-columns:repeat(2,1fr)}.header-inner{flex-wrap:wrap;height:auto;padding:12px 0}}
-/* Ingredient card */
 .ing-card{padding:20px}
 .progress-bar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin:10px 0}
 .progress-fill{height:100%;border-radius:2px;transition:width .3s}
-/* Log list */
 .log-item{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #2A2A3A;font-size:13px}
 </style>
 </head>
 <body>
 
-<!-- Header -->
+<!-- 同步狀態指示器 -->
+<div id="sync-indicator" style="background:#4ADE8022;color:var(--green);border:1px solid #4ADE8044">✓ 已同步</div>
+
 <header>
   <div class="header-inner">
     <div style="display:flex;align-items:center;gap:12px">
@@ -70,24 +69,16 @@ header{background:linear-gradient(135deg,var(--surface) 0%,#16213E 100%);border-
 </header>
 
 <div style="max-width:1100px;margin:0 auto;padding:24px">
-
-  <!-- Stats -->
   <div class="stats-grid" id="stats"></div>
-
-  <!-- Filter -->
   <div style="display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap">
-    <input id="search" placeholder="🔍 搜尋食材..." style="width:180px" oninput="render()" />
+    <input id="search" placeholder="🔍 搜尋食材或位置..." style="width:200px" oninput="render()" />
     <div id="cat-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    <button onclick="loadFromServer()" class="btn btn-ghost" style="margin-left:auto;font-size:12px">🔄 重新整理</button>
   </div>
-
-  <!-- Cards -->
   <div class="grid" id="cards"></div>
 </div>
 
-<!-- Toast -->
 <div id="toast"></div>
-
-<!-- Modal container -->
 <div id="modal-bg" class="modal-bg" style="display:none" onclick="if(event.target===this)closeModal()">
   <div class="modal slide-in" id="modal-content"></div>
 </div>
@@ -96,188 +87,238 @@ header{background:linear-gradient(135deg,var(--surface) 0%,#16213E 100%);border-
 // ═══════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════
-const API_BASE = window.location.origin; // 同源後端
+const API = "";  // 同源，空字串即可
 const CATEGORIES = ["全部","主食","蛋白質","蔬菜","肉類","乳製品","調味料","其他"];
 const COLORS = ["#F59E0B","#60A5FA","#A78BFA","#F87171","#FB923C","#4ADE80","#F472B6","#34D399"];
-const EMOJIS = ["🥚","🥛","🍚","🍅","🍗","🥦","🧅","🧄","🥕","🌽","🍋","🥩","🐟","🫙","🧂","🛢️"];
 
 // ═══════════════════════════════════════════════════
-// STATE
+// STATE（記憶體，資料來源是伺服器）
 // ═══════════════════════════════════════════════════
 let state = {
-  ingredients: load("fi_ingredients") || getDefaults(),
-  lineToken: load("fi_line_token") || "",
-  lineUserId: load("fi_line_userid") || "",
+  ingredients: [],
+  settings: { lineToken: "", lineUserId: "" },
   activeCategory: "全部",
-  sentAlerts: new Set(load("fi_sent_alerts") || []),
+  sentAlerts: new Set(),
+  loading: true,
 };
 
-function load(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}}
-function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
-
-function getDefaults(){
-  const items=[
-    {id:uid(),name:"雞蛋",emoji:"🥚",category:"蛋白質",unit:"個",quantity:6,minStock:1,color:"#F59E0B"},
-    {id:uid(),name:"牛奶",emoji:"🥛",category:"乳製品",unit:"瓶",quantity:2,minStock:1,color:"#60A5FA"},
-    {id:uid(),name:"白米",emoji:"🍚",category:"主食",unit:"包",quantity:3,minStock:1,color:"#A78BFA"},
-    {id:uid(),name:"番茄",emoji:"🍅",category:"蔬菜",unit:"顆",quantity:1,minStock:1,color:"#F87171"},
-    {id:uid(),name:"雞胸肉",emoji:"🍗",category:"肉類",unit:"份",quantity:2,minStock:1,color:"#FB923C"},
-    {id:uid(),name:"花椰菜",emoji:"🥦",category:"蔬菜",unit:"顆",quantity:0,minStock:1,color:"#4ADE80"},
-  ];
-  return items.map(i=>({...i,logs:[{id:uid(),type:"in",qty:i.quantity,date:new Date().toISOString(),note:"初始入庫"}],createdAt:new Date().toISOString()}));
-}
-
-function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2)}
-
-function persist(){
-  save("fi_ingredients", state.ingredients);
-  save("fi_line_token", state.lineToken);
-  save("fi_line_userid", state.lineUserId);
-  save("fi_sent_alerts", [...state.sentAlerts]);
-}
-
 // ═══════════════════════════════════════════════════
-// LINE NOTIFY  ← 透過後端代理發送
+// 同步指示器
 // ═══════════════════════════════════════════════════
-async function sendLine(message){
-  if(!state.lineToken||!state.lineUserId){showToast("請先設定 LINE Bot Token 與 User ID","warn");return}
-  try{
-    const res = await fetch(`${API_BASE}/api/line-notify`,{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({token:state.lineToken,userId:state.lineUserId,message})
-    });
-    const data = await res.json();
-    if(data.success) showToast("✅ LINE 通知已發送","success");
-    else showToast("LINE 發送失敗: "+data.error,"warn");
-  }catch(e){
-    showToast("無法連線後端伺服器","warn");
+function setSyncStatus(status) {
+  const el = document.getElementById("sync-indicator");
+  if (status === "syncing") {
+    el.style.background = "#F59E0B22"; el.style.color = "var(--yellow)"; el.style.borderColor = "#F59E0B44";
+    el.innerHTML = '<span class="spin">⟳</span> 同步中...';
+  } else if (status === "ok") {
+    el.style.background = "#4ADE8022"; el.style.color = "var(--green)"; el.style.borderColor = "#4ADE8044";
+    el.textContent = "✓ 已同步";
+  } else if (status === "error") {
+    el.style.background = "#EF444422"; el.style.color = "var(--red)"; el.style.borderColor = "#EF444444";
+    el.textContent = "✗ 同步失敗";
   }
 }
 
 // ═══════════════════════════════════════════════════
-// LOGIC
+// 伺服器 API
 // ═══════════════════════════════════════════════════
-function calcFreq(logs){
-  const out=(logs||[]).filter(l=>l.type==="out");
-  if(out.length<2)return null;
-  const first=new Date(out[0].date),last=new Date(out[out.length-1].date);
-  const days=Math.max(1,(last-first)/864e5);
-  return (out.reduce((s,l)=>s+l.qty,0)/days).toFixed(2);
+async function api(method, path, body) {
+  setSyncStatus("syncing");
+  try {
+    const res = await fetch(API + path, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    setSyncStatus("ok");
+    return data;
+  } catch (e) {
+    setSyncStatus("error");
+    showToast("網路錯誤，請重新整理", "warn");
+    throw e;
+  }
 }
 
-function daysLeft(qty,freq){
-  if(!freq||freq<=0)return null;
-  return Math.floor(qty/freq);
+async function loadFromServer() {
+  setSyncStatus("syncing");
+  try {
+    const res = await fetch("/api/data");
+    const json = await res.json();
+    if (json.success) {
+      state.ingredients = json.data.ingredients || [];
+      state.settings = json.data.settings || { lineToken: "", lineUserId: "" };
+      setSyncStatus("ok");
+      render();
+      checkAlerts();
+    }
+  } catch (e) {
+    setSyncStatus("error");
+    showToast("無法連線伺服器", "warn");
+  }
 }
 
-function fmtDate(iso){
-  if(!iso)return"—";
-  const d=new Date(iso);
-  return`${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,"0")}`;
+// ═══════════════════════════════════════════════════
+// UTILITY
+// ═══════════════════════════════════════════════════
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+function calcFreq(logs) {
+  const out = (logs || []).filter(l => l.type === "out");
+  if (out.length < 2) return null;
+  const first = new Date(out[0].date), last = new Date(out[out.length - 1].date);
+  const days = Math.max(1, (last - first) / 864e5);
+  return (out.reduce((s, l) => s + l.qty, 0) / days).toFixed(2);
 }
 
-function checkAlerts(){
-  state.ingredients.forEach(item=>{
-    // Low stock
-    if(item.quantity===item.minStock&&item.quantity>0){
-      const k=`low_${item.id}_${item.quantity}`;
-      if(!state.sentAlerts.has(k)){
+function daysLeft(qty, freq) {
+  if (!freq || freq <= 0) return null;
+  return Math.floor(qty / freq);
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+
+// ═══════════════════════════════════════════════════
+// LINE 通知
+// ═══════════════════════════════════════════════════
+async function sendLine(message) {
+  if (!state.settings.lineToken || !state.settings.lineUserId) return;
+  try {
+    await fetch("/api/line-notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.settings.lineToken, userId: state.settings.lineUserId, message }),
+    });
+  } catch (e) { console.error("LINE 通知失敗:", e); }
+}
+
+// ═══════════════════════════════════════════════════
+// 庫存邏輯
+// ═══════════════════════════════════════════════════
+function checkAlerts() {
+  state.ingredients.forEach(item => {
+    if (item.quantity <= item.minStock && item.quantity > 0) {
+      const k = `low_${item.id}_${item.quantity}`;
+      if (!state.sentAlerts.has(k)) {
         state.sentAlerts.add(k);
         sendLine(`⚠️【庫存警告】${item.emoji} ${item.name} 僅剩 ${item.quantity} ${item.unit}，請盡快採購！`);
       }
     }
-    // Empty
-    if(item.quantity===0){
-      const k=`empty_${item.id}`;
-      if(!state.sentAlerts.has(k)){
+    if (item.quantity === 0) {
+      const k = `empty_${item.id}`;
+      if (!state.sentAlerts.has(k)) {
         state.sentAlerts.add(k);
         sendLine(`🚨【庫存告急】${item.emoji} ${item.name} 已用完，請立即補貨！`);
       }
     }
-    // Predictive
-    const freq=calcFreq(item.logs);
-    const days=daysLeft(item.quantity,freq);
-    if(days!==null&&days<=3&&days>0){
-      const k=`pred_${item.id}_${Math.floor(Date.now()/864e5)}`;
-      if(!state.sentAlerts.has(k)){
+    const freq = calcFreq(item.logs);
+    const days = daysLeft(item.quantity, freq);
+    if (days !== null && days <= 3 && days > 0) {
+      const k = `pred_${item.id}_${Math.floor(Date.now()/864e5)}`;
+      if (!state.sentAlerts.has(k)) {
         state.sentAlerts.add(k);
         sendLine(`📊【智慧預警】${item.emoji} ${item.name} 按使用頻率預計 ${days} 天後用完，建議提前採購！`);
       }
     }
   });
-  persist();
 }
 
-function adjustQty(id, delta, note=""){
-  state.ingredients = state.ingredients.map(item=>{
-    if(item.id!==id)return item;
-    const newQty=Math.max(0,item.quantity+delta);
-    const log={id:uid(),type:delta>0?"in":"out",qty:Math.abs(delta),date:new Date().toISOString(),note};
-    if(delta>0&&item.quantity===0) state.sentAlerts.delete(`empty_${id}`);
-    return{...item,quantity:newQty,logs:[...(item.logs||[]),log]};
-  });
-  persist();
-  checkAlerts();
+async function adjustQty(id, delta, note = "") {
+  const item = state.ingredients.find(i => i.id === id);
+  if (!item) return;
+  const newQty = Math.max(0, item.quantity + delta);
+  const log = { id: uid(), type: delta > 0 ? "in" : "out", qty: Math.abs(delta), date: new Date().toISOString(), note };
+  const updated = { ...item, quantity: newQty, logs: [...(item.logs || []), log] };
+  // 先更新畫面（樂觀更新）
+  state.ingredients = state.ingredients.map(i => i.id === id ? updated : i);
   render();
+  // 再同步伺服器
+  try {
+    await api("PUT", `/api/data/ingredients/${id}`, updated);
+    checkAlerts();
+  } catch (e) {
+    // 失敗則還原
+    state.ingredients = state.ingredients.map(i => i.id === id ? item : i);
+    render();
+  }
 }
 
-function addIngredient(data){
-  const item={
-    id:uid(),...data,
-    quantity:Number(data.quantity),
-    minStock:Number(data.minStock),
-    logs:[{id:uid(),type:"in",qty:Number(data.quantity),date:new Date().toISOString(),note:"初始入庫"}],
-    createdAt:new Date().toISOString()
+async function addIngredient(data) {
+  const item = {
+    id: uid(), ...data,
+    quantity: Number(data.quantity),
+    minStock: Number(data.minStock),
+    logs: [{ id: uid(), type: "in", qty: Number(data.quantity), date: new Date().toISOString(), note: "初始入庫" }],
+    createdAt: new Date().toISOString(),
   };
-  state.ingredients=[...state.ingredients,item];
-  persist();
+  state.ingredients = [...state.ingredients, item];
   render();
-  showToast(`${data.emoji} ${data.name} 已新增`,"success");
+  await api("POST", "/api/data/ingredients/add", item);
+  showToast(`${data.emoji} ${data.name} 已新增`, "success");
 }
 
-function deleteItem(id,name){
-  if(!confirm(`確定刪除 ${name}？`))return;
-  state.ingredients=state.ingredients.filter(i=>i.id!==id);
-  persist();
+async function deleteItem(id, name) {
+  if (!confirm(`確定刪除 ${name}？`)) return;
+  state.ingredients = state.ingredients.filter(i => i.id !== id);
   render();
-  showToast("食材已刪除","info");
+  await api("DELETE", `/api/data/ingredients/${id}`);
+  showToast("食材已刪除", "info");
+}
+
+async function saveLocation(id) {
+  const loc = document.getElementById("d-location").value.trim();
+  state.ingredients = state.ingredients.map(i => i.id === id ? { ...i, location: loc } : i);
+  render();
+  const item = state.ingredients.find(i => i.id === id);
+  await api("PUT", `/api/data/ingredients/${id}`, item);
+  showToast("📍 位置已更新", "success");
+  openDetail(id);
+}
+
+async function saveSettings() {
+  state.settings.lineToken = document.getElementById("s-token").value.trim();
+  state.settings.lineUserId = document.getElementById("s-userid").value.trim();
+  await api("POST", "/api/data/settings", state.settings);
+  showToast("設定已儲存", "success");
+  closeModal();
 }
 
 // ═══════════════════════════════════════════════════
 // RENDER
 // ═══════════════════════════════════════════════════
-function render(){
-  const search=document.getElementById("search").value;
-  const filtered=state.ingredients.filter(i=>{
-    const catOk=state.activeCategory==="全部"||i.category===state.activeCategory;
-    const sOk=!search||i.name.includes(search)||( i.location&&i.location.includes(search));
-    return catOk&&sOk;
+function render() {
+  const search = document.getElementById("search").value;
+  const filtered = state.ingredients.filter(i => {
+    const catOk = state.activeCategory === "全部" || i.category === state.activeCategory;
+    const sOk = !search || i.name.includes(search) || (i.location && i.location.includes(search));
+    return catOk && sOk;
   });
 
-  // Stats
-  const low=state.ingredients.filter(i=>i.quantity<=i.minStock&&i.quantity>0);
-  const empty=state.ingredients.filter(i=>i.quantity===0);
-  document.getElementById("stats").innerHTML=[
-    {label:"食材總數",value:state.ingredients.length,icon:"📦",color:"var(--accent)"},
-    {label:"庫存充足",value:state.ingredients.filter(i=>i.quantity>i.minStock).length,icon:"✅",color:"var(--green)"},
-    {label:"庫存警告",value:low.length,icon:"⚠️",color:"var(--yellow)"},
-    {label:"已用完",value:empty.length,icon:"🚨",color:"var(--red)"},
-  ].map(s=>`
+  const low = state.ingredients.filter(i => i.quantity <= i.minStock && i.quantity > 0);
+  const empty = state.ingredients.filter(i => i.quantity === 0);
+
+  document.getElementById("stats").innerHTML = [
+    { label:"食材總數", value:state.ingredients.length, icon:"📦", color:"var(--accent)" },
+    { label:"庫存充足", value:state.ingredients.filter(i=>i.quantity>i.minStock).length, icon:"✅", color:"var(--green)" },
+    { label:"庫存警告", value:low.length, icon:"⚠️", color:"var(--yellow)" },
+    { label:"已用完", value:empty.length, icon:"🚨", color:"var(--red)" },
+  ].map(s => `
     <div class="card" style="padding:16px 20px">
       <div style="font-size:24px;margin-bottom:4px">${s.icon}</div>
       <div style="font-size:28px;font-weight:700;color:${s.color};font-family:'Space Mono',monospace">${s.value}</div>
       <div style="font-size:13px;color:var(--muted);margin-top:2px">${s.label}</div>
     </div>`).join("");
 
-  // Badges
-  const be=document.getElementById("badge-empty");
-  const bl=document.getElementById("badge-low");
-  be.style.display=empty.length?"":"none"; be.textContent=`🚨 ${empty.length} 項告急`;
-  bl.style.display=low.length?"":"none"; bl.textContent=`⚠️ ${low.length} 項低庫存`;
+  const be = document.getElementById("badge-empty");
+  const bl = document.getElementById("badge-low");
+  be.style.display = empty.length ? "" : "none"; be.textContent = `🚨 ${empty.length} 項告急`;
+  bl.style.display = low.length ? "" : "none"; bl.textContent = `⚠️ ${low.length} 項低庫存`;
 
-  // Category tabs
-  document.getElementById("cat-tabs").innerHTML=CATEGORIES.map(c=>`
+  document.getElementById("cat-tabs").innerHTML = CATEGORIES.map(c => `
     <button onclick="setCategory('${c}')" style="padding:6px 14px;border-radius:20px;font-size:13px;font-family:inherit;transition:all .15s;
       background:${state.activeCategory===c?"var(--accent)":"var(--surface)"};
       color:${state.activeCategory===c?"#fff":"var(--muted)"};
@@ -285,27 +326,26 @@ function render(){
       ${c}
     </button>`).join("");
 
-  // Cards
-  if(filtered.length===0){
-    document.getElementById("cards").innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--muted)"><div style="font-size:48px;margin-bottom:12px">🌿</div>找不到食材，點擊「新增食材」開始管理</div>`;
+  if (filtered.length === 0) {
+    document.getElementById("cards").innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--muted)"><div style="font-size:48px;margin-bottom:12px">🌿</div>找不到食材，點擊「新增食材」開始管理</div>`;
     return;
   }
 
-  document.getElementById("cards").innerHTML=filtered.map(item=>{
-    const freq=calcFreq(item.logs);
-    const days=daysLeft(item.quantity,freq);
-    const isEmpty=item.quantity===0;
-    const isLow=item.quantity<=item.minStock&&!isEmpty;
-    const pct=Math.min(100,(item.quantity/Math.max(1,item.minStock*5))*100);
-    const borderColor=isEmpty?"var(--red)":isLow?"#F59E0B44":"var(--border)";
-    return`
+  document.getElementById("cards").innerHTML = filtered.map(item => {
+    const freq = calcFreq(item.logs);
+    const days = daysLeft(item.quantity, freq);
+    const isEmpty = item.quantity === 0;
+    const isLow = item.quantity <= item.minStock && !isEmpty;
+    const pct = Math.min(100, (item.quantity / Math.max(1, item.minStock * 5)) * 100);
+    const borderColor = isEmpty ? "var(--red)" : isLow ? "#F59E0B44" : "var(--border)";
+    return `
     <div class="card ing-card slide-in" style="border-color:${borderColor}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
         <div>
           <div style="font-size:32px;margin-bottom:4px">${item.emoji}</div>
           <div style="font-weight:600;font-size:16px">${item.name}</div>
           <span class="tag" style="background:var(--border);color:var(--muted);margin-top:4px;display:inline-block">${item.category}</span>
-          ${item.location?`<div style="margin-top:6px;font-size:12px;color:#818CF8;display:flex;align-items:center;gap:4px"><span>📍</span><span>${item.location}</span></div>`:""}
+          ${item.location ? `<div style="margin-top:6px;font-size:12px;color:#818CF8;display:flex;align-items:center;gap:4px"><span>📍</span><span>${item.location}</span></div>` : ""}
         </div>
         <div style="text-align:right">
           <div style="font-size:32px;font-weight:700;font-family:'Space Mono',monospace;color:${isEmpty?"var(--red)":isLow?"var(--yellow)":item.color}">${item.quantity}</div>
@@ -313,10 +353,9 @@ function render(){
         </div>
       </div>
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${isEmpty?"var(--red)":isLow?"var(--yellow)":item.color}"></div></div>
-      ${freq?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">📊 使用頻率 ${freq}/天${days!==null?`<span style="color:${days<=3?"var(--yellow)":"var(--green)"};margin-left:6px">· 預計剩 ${days} 天</span>`:""}
-      </div>`:""}
-      ${isEmpty?`<div style="font-size:12px;padding:6px 10px;border-radius:8px;background:#EF444422;color:var(--red);margin-bottom:10px">🚨 庫存已用完！</div>`:
-        isLow?`<div style="font-size:12px;padding:6px 10px;border-radius:8px;background:#F59E0B22;color:var(--yellow);margin-bottom:10px">⚠️ 庫存偏低，建議採購</div>`:""}
+      ${freq ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">📊 使用頻率 ${freq}/天${days!==null?`<span style="color:${days<=3?"var(--yellow)":"var(--green)"};margin-left:6px">· 預計剩 ${days} 天</span>`:""}</div>` : ""}
+      ${isEmpty ? `<div style="font-size:12px;padding:6px 10px;border-radius:8px;background:#EF444422;color:var(--red);margin-bottom:10px">🚨 庫存已用完！</div>` :
+        isLow ? `<div style="font-size:12px;padding:6px 10px;border-radius:8px;background:#F59E0B22;color:var(--yellow);margin-bottom:10px">⚠️ 庫存偏低，建議採購</div>` : ""}
       <div style="display:flex;gap:6px">
         <button onclick="adjustQty('${item.id}',-1)" style="flex:1;padding:7px 0;background:var(--border);color:var(--text);border-radius:8px;font-size:16px;font-family:inherit">−</button>
         <button onclick="adjustQty('${item.id}',1)" style="flex:1;padding:7px 0;background:#6366F122;color:#818CF8;border:1px solid #6366F133;border-radius:8px;font-size:16px;font-family:inherit">+</button>
@@ -327,18 +366,18 @@ function render(){
   }).join("");
 }
 
-function setCategory(c){state.activeCategory=c;render()}
+function setCategory(c) { state.activeCategory = c; render(); }
 
 // ═══════════════════════════════════════════════════
 // MODALS
 // ═══════════════════════════════════════════════════
-function openModal(html){
-  document.getElementById("modal-content").innerHTML=html;
-  document.getElementById("modal-bg").style.display="flex";
+function openModal(html) {
+  document.getElementById("modal-content").innerHTML = html;
+  document.getElementById("modal-bg").style.display = "flex";
 }
-function closeModal(){document.getElementById("modal-bg").style.display="none"}
+function closeModal() { document.getElementById("modal-bg").style.display = "none"; }
 
-function openAdd(){
+function openAdd() {
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
       <div style="font-weight:700;font-size:18px">➕ 新增食材</div>
@@ -375,11 +414,12 @@ function openAdd(){
       </div>
       <div>
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">📍 放置位置</label>
-        <input id="f-location" placeholder="例：冰箱上層、乾貨櫃第2排、冷凍庫..." />
+        <input id="f-location" placeholder="例：冰箱上層、乾貨櫃第2排..."/>
+      </div>
       <div>
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:8px">顏色</label>
         <div style="display:flex;gap:8px" id="color-picker">
-          ${COLORS.map(c=>`<div onclick="selectColor('${c}')" data-color="${c}" style="width:28px;height:28px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${c==='#4ADE80'?'#fff':'transparent'};transition:all .15s"></div>`).join("")}
+          ${COLORS.map((c,i)=>`<div onclick="selectColor('${c}')" data-color="${c}" style="width:28px;height:28px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${i===5?"#fff":"transparent"};transition:all .15s"></div>`).join("")}
         </div>
         <input type="hidden" id="f-color" value="${COLORS[5]}"/>
       </div>
@@ -388,35 +428,35 @@ function openAdd(){
   `);
 }
 
-function selectColor(c){
-  document.getElementById("f-color").value=c;
-  document.querySelectorAll("#color-picker div").forEach(el=>{
-    el.style.borderColor=el.dataset.color===c?"#fff":"transparent";
+function selectColor(c) {
+  document.getElementById("f-color").value = c;
+  document.querySelectorAll("#color-picker div").forEach(el => {
+    el.style.borderColor = el.dataset.color === c ? "#fff" : "transparent";
   });
 }
 
-function submitAdd(){
-  const name=document.getElementById("f-name").value.trim();
-  if(!name){showToast("請輸入食材名稱","warn");return}
+function submitAdd() {
+  const name = document.getElementById("f-name").value.trim();
+  if (!name) { showToast("請輸入食材名稱", "warn"); return; }
   addIngredient({
     name,
-    emoji:document.getElementById("f-emoji").value||"🥬",
-    category:document.getElementById("f-cat").value,
-    unit:document.getElementById("f-unit").value||"個",
-    quantity:document.getElementById("f-qty").value||0,
-    minStock:document.getElementById("f-min").value||1,
-    color:document.getElementById("f-color").value||COLORS[0],
-    location:document.getElementById("f-location").value.trim()||"未設定",
+    emoji: document.getElementById("f-emoji").value || "🥬",
+    category: document.getElementById("f-cat").value,
+    unit: document.getElementById("f-unit").value || "個",
+    quantity: document.getElementById("f-qty").value || 0,
+    minStock: document.getElementById("f-min").value || 1,
+    color: document.getElementById("f-color").value || COLORS[0],
+    location: document.getElementById("f-location").value.trim() || "",
   });
   closeModal();
 }
 
-function openDetail(id){
-  const item=state.ingredients.find(i=>i.id===id);
-  if(!item)return;
-  const freq=calcFreq(item.logs);
-  const days=daysLeft(item.quantity,freq);
-  const logs=[...(item.logs||[])].reverse().slice(0,20);
+function openDetail(id) {
+  const item = state.ingredients.find(i => i.id === id);
+  if (!item) return;
+  const freq = calcFreq(item.logs);
+  const days = daysLeft(item.quantity, freq);
+  const logs = [...(item.logs || [])].reverse().slice(0, 20);
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
       <div style="display:flex;align-items:center;gap:10px">
@@ -424,7 +464,7 @@ function openDetail(id){
         <div>
           <div style="font-weight:700;font-size:18px">${item.name}</div>
           <div style="font-size:12px;color:var(--muted)">${item.category} · ${item.unit}</div>
-          ${item.location?`<div style="font-size:12px;color:#818CF8;margin-top:4px">📍 ${item.location}</div>`:""}
+          ${item.location ? `<div style="font-size:12px;color:#818CF8;margin-top:2px">📍 ${item.location}</div>` : ""}
         </div>
       </div>
       <button onclick="closeModal()" style="background:var(--border);color:var(--text);padding:6px 12px;border-radius:8px;font-family:inherit">✕</button>
@@ -435,11 +475,11 @@ function openDetail(id){
         <div style="font-size:12px;color:var(--muted);margin-top:4px">目前庫存</div>
       </div>
       <div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center">
-        <div style="font-size:18px;font-weight:700;color:#818CF8;font-family:'Space Mono',monospace">${freq||"—"}</div>
+        <div style="font-size:18px;font-weight:700;color:#818CF8;font-family:'Space Mono',monospace">${freq || "—"}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">使用頻率/天</div>
       </div>
       <div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center">
-        <div style="font-size:18px;font-weight:700;color:${days!==null&&days<=3?"var(--red)":"var(--green)"};font-family:'Space Mono',monospace">${days!==null?days+"天":"—"}</div>
+        <div style="font-size:18px;font-weight:700;color:${days!==null&&days<=3?"var(--red)":"var(--green)"};font-family:'Space Mono',monospace">${days !== null ? days+"天" : "—"}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">預估剩餘</div>
       </div>
     </div>
@@ -463,13 +503,13 @@ function openDetail(id){
     </div>
     <div>
       <div style="font-weight:600;margin-bottom:10px;font-size:14px">📋 入出庫記錄</div>
-      ${logs.length===0?`<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px">暫無記錄</div>`:
-        logs.map(l=>`
+      ${logs.length === 0 ? `<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px">暫無記錄</div>` :
+        logs.map(l => `
         <div class="log-item">
           <div style="display:flex;align-items:center;gap:8px">
             <span>${l.type==="in"?"📥":"📤"}</span>
             <span style="color:${l.type==="in"?"var(--green)":"#F87171"}">${l.type==="in"?"+":"-"}${l.qty} ${item.unit}</span>
-            ${l.note?`<span style="color:var(--muted)">· ${l.note}</span>`:""}
+            ${l.note ? `<span style="color:var(--muted)">· ${l.note}</span>` : ""}
           </div>
           <span style="color:var(--muted)">${fmtDate(l.date)}</span>
         </div>`).join("")}
@@ -477,23 +517,14 @@ function openDetail(id){
   `);
 }
 
-function saveLocation(id){
-  const loc=document.getElementById("d-location").value.trim();
-  state.ingredients=state.ingredients.map(i=>i.id===id?{...i,location:loc}:i);
-  persist();
-  render();
-  showToast("📍 位置已更新","success");
-  openDetail(id);
+function doAdj(id, sign) {
+  const qty = Number(document.getElementById("d-qty").value) || 1;
+  const note = document.getElementById("d-note").value;
+  adjustQty(id, sign * qty, note);
+  setTimeout(() => openDetail(id), 300);
 }
 
-function doAdj(id,sign){
-  const qty=Number(document.getElementById("d-qty").value)||1;
-  const note=document.getElementById("d-note").value;
-  adjustQty(id,sign*qty,note);
-  openDetail(id); // refresh
-}
-
-function openSettings(){
+function openSettings() {
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
       <div style="font-weight:700;font-size:18px">⚙️ 系統設定</div>
@@ -512,15 +543,15 @@ function openSettings(){
         5. 掃描 QR Code 將 Bot 加為 LINE 好友（必要！）
       </div>
       <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Channel Access Token</label>
-      <input id="s-token" type="password" value="${state.lineToken}" placeholder="貼上 Channel Access Token" style="margin-bottom:10px"/>
-      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Your User ID（接收通知的帳號）</label>
-      <input id="s-userid" value="${state.lineUserId}" placeholder="例：U1234567890abcdef" style="margin-bottom:10px"/>
+      <input id="s-token" type="password" value="${state.settings.lineToken||""}" placeholder="貼上 Channel Access Token" style="margin-bottom:10px"/>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Your User ID</label>
+      <input id="s-userid" value="${state.settings.lineUserId||""}" placeholder="例：U1234567890abcdef" style="margin-bottom:10px"/>
       <div style="display:flex;gap:8px">
-        <button onclick="saveToken()" class="btn btn-primary" style="flex:1;padding:9px;border-radius:10px">儲存設定</button>
+        <button onclick="saveSettings()" class="btn btn-primary" style="flex:1;padding:9px;border-radius:10px">儲存設定</button>
         <button onclick="testLine()" style="padding:9px 14px;background:var(--border);color:var(--text);border-radius:10px;font-family:inherit">測試通知</button>
       </div>
     </div>
-    <div style="background:var(--surface2);border-radius:12px;padding:16px">
+    <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:12px">
       <div style="font-weight:600;margin-bottom:8px">📊 智慧通知規則</div>
       <div style="font-size:13px;color:var(--muted);line-height:1.8">
         ✅ 庫存 ≤ 警告閾值 → 低庫存通知<br>
@@ -528,63 +559,52 @@ function openSettings(){
         📈 使用頻率預測剩餘 ≤ 3 天 → 提前採購預警
       </div>
     </div>
-    <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-top:12px">
-      <div style="font-weight:600;margin-bottom:8px">🖥️ 後端伺服器狀態</div>
-      <div id="server-status" style="font-size:13px;color:var(--muted)">檢查中...</div>
+    <div style="background:var(--surface2);border-radius:12px;padding:16px">
+      <div style="font-weight:600;margin-bottom:8px">🔄 多裝置同步說明</div>
+      <div style="font-size:13px;color:var(--muted);line-height:1.8">
+        所有資料儲存於伺服器，任何裝置開啟網址均可即時同步。<br>
+        操作後右上角顯示「✓ 已同步」代表成功。
+      </div>
     </div>
   `);
-  checkServerHealth();
 }
 
-async function checkServerHealth(){
-  const el=document.getElementById("server-status");
-  if(!el)return;
-  try{
-    const res=await fetch(`${API_BASE}/api/health`);
-    const d=await res.json();
-    el.innerHTML=`<span style="color:var(--green)">✅ 伺服器正常運行</span> <span style="color:var(--muted)">· ${new Date(d.time).toLocaleTimeString("zh-TW")}</span>`;
-  }catch{
-    el.innerHTML=`<span style="color:var(--red)">❌ 無法連線伺服器</span>`;
-  }
-}
-
-function saveToken(){
-  state.lineToken=document.getElementById("s-token").value.trim();
-  state.lineUserId=document.getElementById("s-userid").value.trim();
-  persist();
-  showToast("設定已儲存","success");
-  closeModal();
-}
-
-function testLine(){
-  state.lineToken=document.getElementById("s-token").value.trim();
-  state.lineUserId=document.getElementById("s-userid").value.trim();
-  persist();
-  sendLine("🧪 食材庫存系統 LINE 通知測試成功！系統已正確設定。");
+async function testLine() {
+  state.settings.lineToken = document.getElementById("s-token").value.trim();
+  state.settings.lineUserId = document.getElementById("s-userid").value.trim();
+  const res = await fetch("/api/line-notify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: state.settings.lineToken, userId: state.settings.lineUserId, message: "🧪 食材庫存系統 LINE 通知測試成功！" }),
+  });
+  const data = await res.json();
+  if (data.success) showToast("✅ LINE 通知已發送", "success");
+  else showToast("LINE 發送失敗: " + data.error, "warn");
 }
 
 // ═══════════════════════════════════════════════════
 // TOAST
 // ═══════════════════════════════════════════════════
 let _toastTimer;
-function showToast(msg,type="info"){
-  const el=document.getElementById("toast");
-  const colors={success:["#4ADE8022","#4ADE80"],warn:["#F59E0B22","#F59E0B"],info:["#6366F122","#818CF8"]};
-  const [bg,border]=colors[type]||colors.info;
-  el.style.background=bg;
-  el.style.border=`1px solid ${border}`;
-  el.style.color=border;
-  el.textContent=msg;
-  el.style.display="block";
+function showToast(msg, type = "info") {
+  const el = document.getElementById("toast");
+  const colors = { success:["#4ADE8022","#4ADE80"], warn:["#F59E0B22","#F59E0B"], info:["#6366F122","#818CF8"] };
+  const [bg, border] = colors[type] || colors.info;
+  el.style.background = bg; el.style.border = `1px solid ${border}`; el.style.color = border;
+  el.textContent = msg; el.style.display = "block";
   clearTimeout(_toastTimer);
-  _toastTimer=setTimeout(()=>{el.style.display="none"},3000);
+  _toastTimer = setTimeout(() => { el.style.display = "none"; }, 3000);
 }
 
 // ═══════════════════════════════════════════════════
-// INIT
+// 自動輪詢（每30秒同步一次）
 // ═══════════════════════════════════════════════════
-render();
-checkAlerts();
+setInterval(() => {
+  loadFromServer();
+}, 30000);
+
+// ─── 啟動 ─────────────────────────────────────────
+loadFromServer();
 </script>
 </body>
 </html>

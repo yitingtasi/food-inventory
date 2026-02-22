@@ -107,6 +107,7 @@ const EMOJIS = ["🥚","🥛","🍚","🍅","🍗","🥦","🧅","🧄","🥕","
 let state = {
   ingredients: load("fi_ingredients") || getDefaults(),
   lineToken: load("fi_line_token") || "",
+  lineUserId: load("fi_line_userid") || "",
   activeCategory: "全部",
   sentAlerts: new Set(load("fi_sent_alerts") || []),
 };
@@ -131,6 +132,7 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 function persist(){
   save("fi_ingredients", state.ingredients);
   save("fi_line_token", state.lineToken);
+  save("fi_line_userid", state.lineUserId);
   save("fi_sent_alerts", [...state.sentAlerts]);
 }
 
@@ -138,12 +140,12 @@ function persist(){
 // LINE NOTIFY  ← 透過後端代理發送
 // ═══════════════════════════════════════════════════
 async function sendLine(message){
-  if(!state.lineToken){showToast("請先設定 LINE Notify Token","warn");return}
+  if(!state.lineToken||!state.lineUserId){showToast("請先設定 LINE Bot Token 與 User ID","warn");return}
   try{
     const res = await fetch(`${API_BASE}/api/line-notify`,{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({token:state.lineToken,message})
+      body:JSON.stringify({token:state.lineToken,userId:state.lineUserId,message})
     });
     const data = await res.json();
     if(data.success) showToast("✅ LINE 通知已發送","success");
@@ -249,7 +251,7 @@ function render(){
   const search=document.getElementById("search").value;
   const filtered=state.ingredients.filter(i=>{
     const catOk=state.activeCategory==="全部"||i.category===state.activeCategory;
-    const sOk=!search||i.name.includes(search);
+    const sOk=!search||i.name.includes(search)||( i.location&&i.location.includes(search));
     return catOk&&sOk;
   });
 
@@ -303,6 +305,7 @@ function render(){
           <div style="font-size:32px;margin-bottom:4px">${item.emoji}</div>
           <div style="font-weight:600;font-size:16px">${item.name}</div>
           <span class="tag" style="background:var(--border);color:var(--muted);margin-top:4px;display:inline-block">${item.category}</span>
+          ${item.location?`<div style="margin-top:6px;font-size:12px;color:#818CF8;display:flex;align-items:center;gap:4px"><span>📍</span><span>${item.location}</span></div>`:""}
         </div>
         <div style="text-align:right">
           <div style="font-size:32px;font-weight:700;font-family:'Space Mono',monospace;color:${isEmpty?"var(--red)":isLow?"var(--yellow)":item.color}">${item.quantity}</div>
@@ -371,6 +374,9 @@ function openAdd(){
         </div>
       </div>
       <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">📍 放置位置</label>
+        <input id="f-location" placeholder="例：冰箱上層、乾貨櫃第2排、冷凍庫..." />
+      <div>
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:8px">顏色</label>
         <div style="display:flex;gap:8px" id="color-picker">
           ${COLORS.map(c=>`<div onclick="selectColor('${c}')" data-color="${c}" style="width:28px;height:28px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${c==='#4ADE80'?'#fff':'transparent'};transition:all .15s"></div>`).join("")}
@@ -400,6 +406,7 @@ function submitAdd(){
     quantity:document.getElementById("f-qty").value||0,
     minStock:document.getElementById("f-min").value||1,
     color:document.getElementById("f-color").value||COLORS[0],
+    location:document.getElementById("f-location").value.trim()||"未設定",
   });
   closeModal();
 }
@@ -417,6 +424,7 @@ function openDetail(id){
         <div>
           <div style="font-weight:700;font-size:18px">${item.name}</div>
           <div style="font-size:12px;color:var(--muted)">${item.category} · ${item.unit}</div>
+          ${item.location?`<div style="font-size:12px;color:#818CF8;margin-top:4px">📍 ${item.location}</div>`:""}
         </div>
       </div>
       <button onclick="closeModal()" style="background:var(--border);color:var(--text);padding:6px 12px;border-radius:8px;font-family:inherit">✕</button>
@@ -433,6 +441,13 @@ function openDetail(id){
       <div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center">
         <div style="font-size:18px;font-weight:700;color:${days!==null&&days<=3?"var(--red)":"var(--green)"};font-family:'Space Mono',monospace">${days!==null?days+"天":"—"}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">預估剩餘</div>
+      </div>
+    </div>
+    <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:10px;font-size:14px">📍 放置位置</div>
+      <div style="display:flex;gap:8px">
+        <input id="d-location" value="${item.location||""}" placeholder="例：冰箱上層、乾貨櫃第2排..."/>
+        <button onclick="saveLocation('${id}')" style="padding:9px 14px;background:var(--accent);color:#fff;border-radius:10px;font-family:inherit;font-weight:600;white-space:nowrap">儲存</button>
       </div>
     </div>
     <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:16px">
@@ -462,6 +477,15 @@ function openDetail(id){
   `);
 }
 
+function saveLocation(id){
+  const loc=document.getElementById("d-location").value.trim();
+  state.ingredients=state.ingredients.map(i=>i.id===id?{...i,location:loc}:i);
+  persist();
+  render();
+  showToast("📍 位置已更新","success");
+  openDetail(id);
+}
+
 function doAdj(id,sign){
   const qty=Number(document.getElementById("d-qty").value)||1;
   const note=document.getElementById("d-note").value;
@@ -478,15 +502,19 @@ function openSettings(){
     <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:16px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
         <span style="font-size:22px">💬</span>
-        <div style="font-weight:600">LINE Notify 設定</div>
+        <div style="font-weight:600">LINE Messaging API 設定</div>
       </div>
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px;line-height:1.7">
-        1. 前往 <a href="https://notify-bot.line.me/zh_TW/" target="_blank" style="color:var(--accent)">LINE Notify 官網</a> 登入<br>
-        2. 點選「發行權杖」，設定通知群組<br>
-        3. 複製 Token 貼到下方後儲存
+        1. 前往 <a href="https://developers.line.biz/console/" target="_blank" style="color:var(--accent)">LINE Developers Console</a> 登入<br>
+        2. 建立 Provider → 建立 Messaging API Channel<br>
+        3. 「Messaging API」頁籤 → 最下方產生 Channel Access Token<br>
+        4. 「Basic settings」頁籤 → 複製 Your user ID<br>
+        5. 掃描 QR Code 將 Bot 加為 LINE 好友（必要！）
       </div>
-      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">LINE Notify Token</label>
-      <input id="s-token" type="password" value="${state.lineToken}" placeholder="貼上您的 LINE Notify Token" style="margin-bottom:10px"/>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Channel Access Token</label>
+      <input id="s-token" type="password" value="${state.lineToken}" placeholder="貼上 Channel Access Token" style="margin-bottom:10px"/>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Your User ID（接收通知的帳號）</label>
+      <input id="s-userid" value="${state.lineUserId}" placeholder="例：U1234567890abcdef" style="margin-bottom:10px"/>
       <div style="display:flex;gap:8px">
         <button onclick="saveToken()" class="btn btn-primary" style="flex:1;padding:9px;border-radius:10px">儲存設定</button>
         <button onclick="testLine()" style="padding:9px 14px;background:var(--border);color:var(--text);border-radius:10px;font-family:inherit">測試通知</button>
@@ -522,6 +550,7 @@ async function checkServerHealth(){
 
 function saveToken(){
   state.lineToken=document.getElementById("s-token").value.trim();
+  state.lineUserId=document.getElementById("s-userid").value.trim();
   persist();
   showToast("設定已儲存","success");
   closeModal();
@@ -529,6 +558,7 @@ function saveToken(){
 
 function testLine(){
   state.lineToken=document.getElementById("s-token").value.trim();
+  state.lineUserId=document.getElementById("s-userid").value.trim();
   persist();
   sendLine("🧪 食材庫存系統 LINE 通知測試成功！系統已正確設定。");
 }

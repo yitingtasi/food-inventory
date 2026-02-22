@@ -18,20 +18,23 @@ app.use(express.static(path.join(__dirname, "public"))); // 前端靜態檔案
  * Body: { token: "LINE_NOTIFY_TOKEN", message: "通知內容" }
  */
 app.post("/api/line-notify", (req, res) => {
-  const { token, message } = req.body;
+  const { token, userId, message } = req.body;
 
-  if (!token || !message) {
-    return res.status(400).json({ success: false, error: "缺少 token 或 message" });
+  if (!token || !userId || !message) {
+    return res.status(400).json({ success: false, error: "缺少 token、userId 或 message" });
   }
 
-  const body = `message=${encodeURIComponent(message)}`;
+  const body = JSON.stringify({
+    to: userId,
+    messages: [{ type: "text", text: message }],
+  });
 
   const options = {
-    hostname: "notify-api.line.me",
-    path: "/api/notify",
+    hostname: "api.line.me",
+    path: "/v2/bot/message/push",
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(body),
       Authorization: `Bearer ${token}`,
     },
